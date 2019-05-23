@@ -1,0 +1,7 @@
+#Ignore all .tar and .tar.gz archives
+*.tar
+*.tar.gz
+
+#Ignore everything in data and archived
+data/
+archived/
