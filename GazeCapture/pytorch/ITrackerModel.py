@@ -15,6 +15,7 @@ import torchvision.models as models
 import numpy as np
 import torch.utils.model_zoo as model_zoo
 from torch.autograd.variable import Variable
+import thop
 
 '''
 Pytorch model for the iTracker.
@@ -119,20 +120,43 @@ class ITrackerModel(nn.Module):
             nn.Linear(128, 2),
             )
 
-    def forward(self, faces, eyesLeft, eyesRight, faceGrids):
+    def forward(self, faces, eyesLeft, eyesRight, faceGrids, model_stats=None):
         # Eye nets
-        xEyeL = self.eyeModel(eyesLeft)
-        xEyeR = self.eyeModel(eyesRight)
+        thop_device = "cuda:" + str(torch.cuda.current_device())
+        
+        xEyeL = self.eyeModel(eyesLeft) #Flops
+        xEyeR = self.eyeModel(eyesRight) #Flops
         # Cat and FC
         xEyes = torch.cat((xEyeL, xEyeR), 1)
-        xEyes = self.eyesFC(xEyes)
+        xEyes_fc = self.eyesFC(xEyes) #Flops
 
         # Face net
-        xFace = self.faceModel(faces)
-        xGrid = self.gridModel(faceGrids)
+        xFace = self.faceModel(faces) #Flops
+        xGrid = self.gridModel(faceGrids) #Flops
 
         # Cat all
-        x = torch.cat((xEyes, xFace, xGrid), 1)
-        x = self.fc(x)
+        x_cat = torch.cat((xEyes_fc, xFace, xGrid), 1)
+     
+        x = self.fc(x_cat) 
         
+        if (model_stats != None):
+            total_params, total_flops= 0, 0
+            models = [self.eyeModel, self.eyeModel, self.eyesFC, self.faceModel, self.gridModel, self.fc]
+            inputs = [eyesLeft, eyesRight, xEyes, faces, faceGrids, x_cat]
+            reused = [1]
+            for idx, sub_model in enumerate(models):
+                flops, params = thop.profile(sub_model, input_size = inputs[idx].size(), device=thop_device)
+#                 print(params, flops)
+                if idx not in reused: 
+                    #Skip repeated params
+                    total_params += params
+                total_flops += flops
+#                 print(total_params, total_flops)
+#                 torch.cuda.empty_cache()
+                
+            total_flops /= (faces.size(0) * 1.) #Divide by batch size to get count for single frame
+            model_stats['flops'] = total_flops
+            model_stats['params'] = total_params
+#             print("Number of parameters %i, number of flops: %i" % (total_params, total_flops))
+            
         return x

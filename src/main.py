@@ -13,7 +13,7 @@ import torchvision.datasets as datasets
 import torchvision.models as models
 
 from ITrackerData import ITrackerData
-from MobileGazeModel import MobileGazeModel
+from MobileGaze import MobileGaze
 
 '''
 Train/test code for MobileGaze.
@@ -47,8 +47,7 @@ batch_size = torch.cuda.device_count()*100 # Change if out of cuda memory
 
 #Hyperparams used in iTracker 
 base_lr = 0.0001
-momentum = 0.9
-weight_decay = 1e-4
+adam_betas = [0.9, .999]
 print_freq = 10
 prec1 = 0
 best_prec1 = 1e20
@@ -63,7 +62,7 @@ count = 0
 def main():
     global args, best_prec1, weight_decay, momentum
 
-    model = MobileGazeModel()
+    model = MobileGazeModel(batch_norm = False)
     
     print("Total number of model parameters: ", sum(p.numel() for p in model.parameters()))
     print("Number of trainable parameters: ", sum(p.numel() for p in model.parameters() if p.requires_grad))
@@ -106,8 +105,7 @@ def main():
     criterion = nn.MSELoss().cuda()
 
     optimizer = torch.optim.Adam(model.parameters(), lr,
-                                momentum=momentum,
-                                weight_decay=weight_decay)
+                                betas=adam_betas)
 
     # Test mode
     if doTest: 
@@ -266,7 +264,7 @@ def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
     filename = os.path.join(CHECKPOINTS_PATH, filename)
     torch.save(state, filename)
     if is_best:
-        shutil.copyfile(filename, bestFilename)
+        shutil.copyfile(filename, bestFilename) #overwrites existing file
 
 
 class AverageMeter(object):

@@ -11,6 +11,7 @@ import torch.utils.data
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
+import thop #AD: FLOP counter 
 
 from ITrackerData import ITrackerData
 from ITrackerModel import ITrackerModel
@@ -19,6 +20,8 @@ from ITrackerModel import ITrackerModel
 Train/test code for iTracker.
 
 Author: Petr Kellnhofer ( pkel_lnho (at) gmai_l.com // remove underscores and spaces), 2018. 
+
+Adapted to generate FLOP and parameter metrics by Avoy Datta (avoy.datta@stanford.edu)
 
 Website: http://gazecapture.csail.mit.edu/
 
@@ -55,7 +58,7 @@ args = parser.parse_args()
 doLoad = not args.reset # Load checkpoint at the beginning
 doTest = args.sink # Only run test, no training
 
-workers = 16
+workers = 8
 epochs = 25
 batch_size = torch.cuda.device_count()*100 # Change if out of cuda memory
 
@@ -76,11 +79,11 @@ def main():
     global args, best_prec1, weight_decay, momentum
 
     model = ITrackerModel()
+
+    print("Total number of parameters: ", sum(p.numel() for p in model.parameters()))
+    #print("Number of trainable parameters: ", sum(p.numel() for p in model.parameters() if p.requires_grad))
     
-    print("Total number of model parameters: ", sum(p.numel() for p in model.parameters()))
-    print("Number of trainable parameters: ", sum(p.numel() for p in model.parameters() if p.requires_grad))
-    
-    model = torch.nn.DataParallel(model)
+    model = nn.DataParallel(model)
     model.cuda()
     imSize=(224,224)
     cudnn.benchmark = True   
@@ -104,6 +107,12 @@ def main():
     dataTrain = ITrackerData(dataPath = args.data_path, split='train', imSize = imSize)
     dataVal = ITrackerData(dataPath = args.data_path, split='test', imSize = imSize)
    
+    
+#     data = dataVal.__getitem__(0)
+#     for idx in range(len(data)):
+#         np.squeeze(data[idx])
+#     model_stats = get_model_stats(model, data)
+    
     train_loader = torch.utils.data.DataLoader(
         dataTrain,
         batch_size=batch_size, shuffle=True,
@@ -114,13 +123,12 @@ def main():
         batch_size=batch_size, shuffle=False,
         num_workers=workers, pin_memory=True)
 
-
     criterion = nn.MSELoss().cuda()
 
     optimizer = torch.optim.SGD(model.parameters(), lr,
                                 momentum=momentum,
                                 weight_decay=weight_decay)
-
+    
     # Quick test
     if doTest:
         val_mean = validate(val_loader, model, criterion, epoch)
@@ -131,6 +139,7 @@ def main():
         adjust_learning_rate(optimizer, epoch)
         
     for epoch in range(epoch, epochs):
+
         adjust_learning_rate(optimizer, epoch)
 
         # train for one epoch
@@ -147,6 +156,7 @@ def main():
             'state_dict': model.state_dict(),
             'best_prec1': best_prec1,
         }, is_best)
+
 
 
 def train(train_loader, model, criterion,optimizer, epoch):
@@ -179,7 +189,13 @@ def train(train_loader, model, criterion,optimizer, epoch):
         gaze = torch.autograd.Variable(gaze, requires_grad = False)
 
         # compute output
-        output = model(imFace, imEyeL, imEyeR, faceGrid)
+        model_stats = dict()
+        with torch.no_grad():
+            if i == 0:          
+                output = model(imFace, imEyeL, imEyeR, faceGrid, model_stats=model_stats)
+                print("Number of parameters %i, number of flops: %i" % (model_stats['params'], model_stats['flops']))
+            else:      
+                output = model(imFace, imEyeL, imEyeR, faceGrid)
 
         loss = criterion(output, gaze)
         
@@ -230,10 +246,15 @@ def validate(val_loader, model, criterion, epoch):
         imEyeR = torch.autograd.Variable(imEyeR, requires_grad = False)
         faceGrid = torch.autograd.Variable(faceGrid, requires_grad = False)
         gaze = torch.autograd.Variable(gaze, requires_grad = False)
-
+ 
         # compute output
+        model_stats = dict()
         with torch.no_grad():
-            output = model(imFace, imEyeL, imEyeR, faceGrid)
+            if i == 0:          
+                output = model(imFace, imEyeL, imEyeR, faceGrid, model_stats=model_stats)
+                print("Number of parameters %i, number of flops: %i" % (model_stats['params'], model_stats['flops']))
+            else:      
+                output = model(imFace, imEyeL, imEyeR, faceGrid)
 
         loss = criterion(output, gaze)
         
@@ -305,6 +326,22 @@ def adjust_learning_rate(optimizer, epoch):
     for param_group in optimizer.state_dict()['param_groups']:
         param_group['lr'] = lr
 
+def get_model_stats(model, data):
+    stats = []
+    
+    _, imFace, imEyeL, imEyeR, faceGrid, _ = data 
+    imFace = imFace.cuda()
+    imEyeL = imEyeL.cuda()
+    imEyeR = imEyeR.cuda()
+    faceGrid = faceGrid.cuda()
+    imFace = torch.autograd.Variable(imFace, requires_grad = False)
+    imEyeL = torch.autograd.Variable(imEyeL, requires_grad = False)
+    imEyeR = torch.autograd.Variable(imEyeR, requires_grad = False)
+    faceGrid = torch.autograd.Variable(faceGrid, requires_grad = False)
+    with torch.no_grad():
+        _ = model.forward(imFace, imEyeL, imEyeR, faceGrid, model_stats = stats)
+    
+    return dict(zip(['flops', 'params'], stats))
 
 if __name__ == "__main__":
     main()

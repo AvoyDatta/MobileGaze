@@ -97,10 +97,10 @@ class FaceGridModel(nn.Module):
 
 
 
-class MobileGazeModel(nn.Module):
+class MobileGaze(nn.Module):
 
 
-    def __init__(self):
+    def __init__(self, batch_norm=False):
         super(ITrackerModel, self).__init__()
         self.eyeModel = MobileGazeImageModel()
         self.faceModel = FaceImageModel()
