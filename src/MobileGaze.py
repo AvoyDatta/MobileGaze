@@ -96,7 +96,7 @@ class FaceGridModel(nn.Module):
             nn.ReLU(inplace=True),
             nn.BatchNorm1d(128)
             )
-        self.conv = nn.Conv2d(1, 1, 3, padding=1)
+#         self.conv = nn.Conv2d(1, 1, 3, padding=1)
         
     def forward(self, x):
 #         x = x.view(x.size(0), 1, 25, 25) #(N, 1, 25, 25)

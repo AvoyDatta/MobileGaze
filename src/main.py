@@ -15,6 +15,8 @@ import thop
 
 from ITrackerData import ITrackerData
 from MobileGaze import MobileGaze
+# import tensorboard 
+from tensorboardX import SummaryWriter
 
 '''
 Train/test code for MobileGaze.
@@ -38,6 +40,8 @@ parser.add_argument('--data_path', help="Path to processed dataset. It should co
 parser.add_argument('--test', type=str2bool, nargs='?', const=True, default=False, help="Test mode.")
 parser.add_argument('--reset', type=str2bool, nargs='?', const=True, default=False, help="Start from scratch (do not load).")
 parser.add_argument('--workers', type=int, nargs='?', const=True, default=2, help="Number of CPU cores.")
+parser.add_argument('--lr', type=float, nargs='?', const=True, default=0.01, help="Initial learning rate.")
+
 
 args = parser.parse_args()
 
@@ -48,18 +52,19 @@ doTest = args.test # Only run test, no training
 workers = args.workers
 num_gpus = 0 if not torch.cuda.is_available() else torch.cuda.device_count() 
 print("Using {} GPUs, {} CPU workers.".format(num_gpus, workers))
-epochs = 25
+epochs = 1
 batch_per_gpu = 100
 batch_size = torch.cuda.device_count()*batch_per_gpu # Change if out of cuda memory
 
 #Hyperparams used in iTracker 
-base_lr = 0.01
+base_lr = args.lr
 adam_betas = [0.9, .999]
 print_freq = 10
 prec1 = 0
-best_prec1 = 1e20
 lr = base_lr
 save_every = 1
+log_every=1
+log_dir = '../tb_logs/sn/'
 lr_decay = 0.4
 lr_period = 10
 
@@ -68,8 +73,10 @@ CHECKPOINTS_PATH = './saved_models/sn/'
 #Note that --reset overrides this
 saved_model_path = None if not args.saved_model else str(args.saved_model)
 
+writer = SummaryWriter()
+
 def main():
-    global args, best_prec1, weight_decay, momentum
+#     global args, best_prec1, weight_decay, momentum
 
     model = MobileGaze().cuda()
     
@@ -95,7 +102,8 @@ def main():
             best_prec1 = saved['best_prec1']
         else:
             print('Warning: Could not read checkpoint!')
-
+    else:
+        print("Training model from scratch.")
     
     dataTrain = ITrackerData(dataPath = args.data_path, split='train', imSize = imSize)
     dataVal = ITrackerData(dataPath = args.data_path, split='val', imSize = imSize)
@@ -133,22 +141,27 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr,
                                 betas=adam_betas)
         
-    train_model(model, train_loader, val_loader, optimizer, criterion, epoch, epochs)
+    train_model(model, val_loader, val_loader, optimizer, criterion, epoch, epochs)
     
+    # export scalar data to JSON for external processing
+    writer.export_scalars_to_json("./all_scalars.json")
+    writer.close()
 
 def train_model(model, train_loader, val_loader, optimizer, criterion, start_epoch, epochs):
-    
+#     tb = tensorboard.Tensorboard(log_dir)
+    best_prec1 = int(1e20)
+    train_counter = 0
     loss_list = []
     for epoch in range(start_epoch, epochs):
         lr = adjust_learning_rate(optimizer, epoch)
         print("Learning rate for epoch{}: {}".format(epoch, lr))
         
         # train for one epoch
-        train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list)
+        train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list, train_counter)
 
         # evaluate on validation set
-        prec1 = validate(val_loader, model, criterion, epoch)
-
+#         prec1 = validate(val_loader, model, criterion, epoch)
+        prec1 = 100
         # remember best prec@1 and save checkpoint
         is_best = prec1 < best_prec1
         best_prec1 = min(prec1, best_prec1)
@@ -157,11 +170,11 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, start_epo
             'epoch': epoch + 1,
             'state_dict': model.state_dict(),
             'best_prec1': best_prec1,
-        }, is_best, )
+        }, is_best, save_name)
         
-    np.save("./train_losses.npy", np.array(losses))
+    np.save("./trainlosses_lr{}_ep{}.npy".format(lr, epochs), np.array(loss_list))
     
-def train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list):
+def train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list, train_counter):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -172,6 +185,7 @@ def train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list):
     end = time.time()
 
     for i, (row, imFace, imEyeL, imEyeR, faceGrid, gaze) in enumerate(train_loader):
+        if i > 2: break
         # measure data loading time
         data_time.update(time.time() - end)
         time0 = time.time()
@@ -207,7 +221,7 @@ def train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-
+        train_counter += 1
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
@@ -224,6 +238,31 @@ def train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list):
                        epoch, i, len(train_loader), batch_time=batch_time,
                        data_time=data_time, loss=losses))
             loss_list.append(losses.val)
+        if i % log_every == 0:
+             # ================================================================== #
+            #                        TensorboardX Logging                         #
+            # ================================================================== #
+            
+            # 1. Log scalar values (scalar summary)
+            info = { 'loss': losses.val, 'loss_avg': losses.avg }
+
+            for tag, value in info.items():
+                writer.add_scalar(tag, value, train_counter)
+
+            # 2. Log values and gradients of the parameters (histogram summary)
+            for tag, value in model.named_parameters():
+#                 print(tag)
+                tag = tag.replace('.', '/')
+                writer.add_histogram(tag, value.data.cpu().numpy(), train_counter)
+                writer.add_histogram(tag+'/grad', value.grad.data.cpu().numpy(), train_counter)
+        
+            # 3. Log training images (image summary)
+#             info = { 'images': images.view(-1, 28, 28)[:10].cpu().numpy() }
+
+#             for tag, images in info.items():
+#                 logger.image_summary(tag, images, train_counter)
+            
+            
             
 def validate(val_loader, model, criterion, epoch):
     count_test = 0
