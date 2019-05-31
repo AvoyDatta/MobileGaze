@@ -55,14 +55,14 @@ class ItrackerImageModel(nn.Module):
             nn.CrossMapLRN2d(size=5, alpha=0.0001, beta=0.75, k=1.0),
             nn.Conv2d(256, 384, kernel_size=3, stride=1, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(384, 64, kernel_size=1, stride=1, padding=0),
+            nn.Conv2d(384, 64, kernel_size=1, stride=1, padding=0), #(64, 12, 12)
             nn.ReLU(inplace=True),
             
         )
 
     def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
+        x = self.features(x) #(64, 12, 12)
+        x = x.view(x.size(0), -1) #(64 x 12 x 12)
         return x
 
 class FaceImageModel(nn.Module):

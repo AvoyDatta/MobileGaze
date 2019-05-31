@@ -12,23 +12,9 @@ import re
 Data loader for the iTracker.
 Use prepareDataset.py to convert the dataset from http://gazecapture.csail.mit.edu/ to proper format.
 
-Author: Petr Kellnhofer ( pkel_lnho (at) gmai_l.com // remove underscores and spaces), 2018. 
+Adapted for MobileGaze by Avoy Datta (avoy.datta@stanford.edu)
 
-Website: http://gazecapture.csail.mit.edu/
-
-Cite:
-
-Eye Tracking for Everyone
-K.Krafka*, A. Khosla*, P. Kellnhofer, H. Kannan, S. Bhandarkar, W. Matusik and A. Torralba
-IEEE Conference on Computer Vision and Pattern Recognition (CVPR), 2016
-
-@inproceedings{cvpr2016_gazecapture,
-Author = {Kyle Krafka and Aditya Khosla and Petr Kellnhofer and Harini Kannan and Suchendra Bhandarkar and Wojciech Matusik and Antonio Torralba},
-Title = {Eye Tracking for Everyone},
-Year = {2016},
-Booktitle = {IEEE Conference on Computer Vision and Pattern Recognition (CVPR)}
-}
-
+Original author: Petr Kellnhofer ( pkel_lnho (at) gmai_l.com // remove underscores and spaces), 2018. 
 '''
 
 MEAN_PATH = './'
@@ -70,7 +56,7 @@ class ITrackerData(data.Dataset):
 
         print('Loading iTracker dataset...')
         metaFile = os.path.join(dataPath, 'metadata.mat')
-        #metaFile = 'metadata.mat'
+
         if metaFile is None or not os.path.isfile(metaFile):
             raise RuntimeError('There is no such file %s! Provide a valid dataset path.' % metaFile)
         self.metadata = loadMetadata(metaFile)
@@ -97,7 +83,7 @@ class ITrackerData(data.Dataset):
             SubtractMean(meanImg=self.eyeRightMean),
         ])
 
-
+        
         if split == 'test':
             mask = self.metadata['labelTest']
         elif split == 'val':
