@@ -99,8 +99,8 @@ class FaceGridModel(nn.Module):
         self.conv = nn.Conv2d(1, 1, 3, padding=1)
         
     def forward(self, x):
-        x = x.view(x.size(0), 1, 25, 25) #(N, 1, 25, 25)
-        x = self.conv(x) #Doesnt affect size of input
+#         x = x.view(x.size(0), 1, 25, 25) #(N, 1, 25, 25)
+#         x = self.conv(x) #Doesnt affect size of input
         x = x.view(x.size(0), -1) #(N, 625)
         x = self.fc(x) #(N, 128)
         return x
@@ -120,7 +120,7 @@ class MobileGaze(nn.Module):
         self.eyesFC = nn.Sequential(
             nn.Linear(2*squeezenet_outs, 128), #(num_eyes * (act_size/eye))
             nn.LeakyReLU(inplace=True),
-#             nn.BatchNorm1d(128)
+            nn.BatchNorm1d(128)
             )
         # Joining everything
         self.fc = nn.Sequential(

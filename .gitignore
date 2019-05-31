@@ -5,7 +5,10 @@
 #Ignore everything in data and archived
 data/
 archived/
+processed/
+tb_logs/
 
 #Ignore pytorch cache and executables
+
 GazeCapture/pytorch/__pycache__/*.pyc
 GazeCapture/pytorch/__pycache__

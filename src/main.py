@@ -48,12 +48,12 @@ doTest = args.test # Only run test, no training
 workers = args.workers
 num_gpus = 0 if not torch.cuda.is_available() else torch.cuda.device_count() 
 print("Using {} GPUs, {} CPU workers.".format(num_gpus, workers))
-epochs = 50
-batch_per_gpu = 64
+epochs = 25
+batch_per_gpu = 100
 batch_size = torch.cuda.device_count()*batch_per_gpu # Change if out of cuda memory
 
 #Hyperparams used in iTracker 
-base_lr = 0.001
+base_lr = 0.01
 adam_betas = [0.9, .999]
 print_freq = 10
 prec1 = 0
@@ -71,13 +71,13 @@ saved_model_path = None if not args.saved_model else str(args.saved_model)
 def main():
     global args, best_prec1, weight_decay, momentum
 
-    model = MobileGaze()
+    model = MobileGaze().cuda()
     
     print("Total number of model parameters: ", sum(p.numel() for p in model.parameters()))
     print("Number of trainable parameters: ", sum(p.numel() for p in model.parameters() if p.requires_grad))
     
     model = torch.nn.DataParallel(model)
-    model.cuda()
+
     imSize=(224,224)
     cudnn.benchmark = True   
 
@@ -132,7 +132,6 @@ def main():
 
     optimizer = torch.optim.Adam(model.parameters(), lr,
                                 betas=adam_betas)
-    
         
     train_model(model, train_loader, val_loader, optimizer, criterion, epoch, epochs)
     
@@ -175,26 +174,32 @@ def train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list):
     for i, (row, imFace, imEyeL, imEyeR, faceGrid, gaze) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
+        time0 = time.time()
         imFace = imFace.cuda()
         imEyeL = imEyeL.cuda()
         imEyeR = imEyeR.cuda()
         faceGrid = faceGrid.cuda()
         gaze = gaze.cuda()
-        imFace = torch.autograd.Variable(imFace, requires_grad = True)
-        imEyeL = torch.autograd.Variable(imEyeL, requires_grad = True)
-        imEyeR = torch.autograd.Variable(imEyeR, requires_grad = True)
-        faceGrid = torch.autograd.Variable(faceGrid, requires_grad = True)
-        gaze = torch.autograd.Variable(gaze, requires_grad = True)
-
+#         imFace = torch.autograd.Variable(imFace, requires_grad = False)
+#         imEyeL = torch.autograd.Variable(imEyeL, requires_grad = False)
+#         imEyeR = torch.autograd.Variable(imEyeR, requires_grad = False)
+#         faceGrid = torch.autograd.Variable(faceGrid, requires_grad = False)
+#         gaze = torch.autograd.Variable(gaze, requires_grad = False)
+        time1 = time.time() - time0
+        print("Time for sec 1 {}".format(time1))
+        time1 = time.time()
         # compute output
-        model_stats = dict()
-        with torch.no_grad():
-            if i == 0:          
-                output = model(imFace, imEyeL, imEyeR, faceGrid)
+#         model_stats = dict()
+#         with torch.no_grad():
+#         if i == 0:          
+        output = model(imFace, imEyeL, imEyeR, faceGrid)
 #                 print("Number of parameters %i, number of flops: %i" % (model_stats['params'], model_stats['flops']))
-            else:      
-                output = model(imFace, imEyeL, imEyeR, faceGrid)
+#         else:      
+#             output = model(imFace, imEyeL, imEyeR, faceGrid)
 
+        time2 = time.time() - time1
+        print("Time for sec 2 {}".format(time2))
+        time2 = time.time()
         loss = criterion(output, gaze)
         losses.update(loss.data.item(), imFace.size(0))
 
@@ -208,7 +213,9 @@ def train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list):
         end = time.time()
 
 #         count=count+1
-        
+        time3 = time.time() - time2
+        print("Time for sec 3 {}".format(time3))
+
         if i % print_freq == 0:
             print('Epoch (train): [{0}][{1}/{2}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
