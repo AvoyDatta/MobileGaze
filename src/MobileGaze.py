@@ -28,6 +28,8 @@ Adapted from iTracker-Pytorch Implementation
 
 squeezenet_outs = 256
 sn_pretrained = True
+bn_momentum = 0.2
+track_running_stats=True
 
 class MobileGazeImageModel(nn.Module):
     # Used for both eyes (with shared weights) and the face (with unqiue weights)
@@ -47,7 +49,7 @@ class MobileGazeImageModel(nn.Module):
         self.features = self.sn
         self.features.num_classes = squeezenet_outs 
         
-        self.batchnorm = nn.BatchNorm1d(squeezenet_outs)
+        self.batchnorm = nn.BatchNorm1d(squeezenet_outs, momentum=bn_momentum, track_running_stats=True)
         #Updates the classification layer of SqueezeNet
         #SN should now return a vector of scores of dim squeezenet_outs
 #         print([v.size() for k, v in self.features.state_dict().items()])
@@ -73,10 +75,10 @@ class FaceImageModel(nn.Module):
         self.fc = nn.Sequential(
             nn.Linear(squeezenet_outs, 128),
             nn.ReLU(inplace=True),
-            nn.BatchNorm1d(128),
+            nn.BatchNorm1d(128, bn_momentum, track_running_stats=True),
             nn.Linear(128, 64),
             nn.ReLU(inplace=True),
-            nn.BatchNorm1d(64)
+            nn.BatchNorm1d(64, bn_momentum, track_running_stats=True)
             )
 
     def forward(self, x):
@@ -91,10 +93,10 @@ class FaceGridModel(nn.Module):
         self.fc = nn.Sequential(
             nn.Linear(gridSize * gridSize, 256),
             nn.ReLU(inplace=True),
-            nn.BatchNorm1d(256),
+            nn.BatchNorm1d(256, bn_momentum, track_running_stats=True),
             nn.Linear(256, 128),
             nn.ReLU(inplace=True),
-            nn.BatchNorm1d(128)
+            nn.BatchNorm1d(128, bn_momentum, track_running_stats=True)
             )
 #         self.conv = nn.Conv2d(1, 1, 3, padding=1)
         
@@ -120,13 +122,13 @@ class MobileGaze(nn.Module):
         self.eyesFC = nn.Sequential(
             nn.Linear(2*squeezenet_outs, 128), #(num_eyes * (act_size/eye))
             nn.LeakyReLU(inplace=True),
-            nn.BatchNorm1d(128)
+            nn.BatchNorm1d(128, bn_momentum, track_running_stats=True)
             )
         # Joining everything
         self.fc = nn.Sequential(
             nn.Linear(128+64+128, 128), #[in dims = eyesFC(128) + faceImage(64) + faceGrid(128)]
             nn.LeakyReLU(inplace=True),
-            nn.Linear(128, 2),
+            nn.Linear(128, 2)
             )
 
     def forward(self, faces, eyesLeft, eyesRight, faceGrids, model_stats=None):

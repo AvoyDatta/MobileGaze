@@ -41,7 +41,7 @@ parser.add_argument('--test', type=str2bool, nargs='?', const=True, default=Fals
 parser.add_argument('--reset', type=str2bool, nargs='?', const=True, default=False, help="Start from scratch (do not load).")
 parser.add_argument('--workers', type=int, nargs='?', const=True, default=2, help="Number of CPU cores.")
 parser.add_argument('--lr', type=float, nargs='?', const=True, default=0.01, help="Initial learning rate.")
-
+parser.add_argument('--momentum', type=float, nargs='?', const=True, default=0.01, help="Momentum for batch normalization.")
 
 args = parser.parse_args()
 
@@ -52,7 +52,7 @@ doTest = args.test # Only run test, no training
 workers = args.workers
 num_gpus = 0 if not torch.cuda.is_available() else torch.cuda.device_count() 
 print("Using {} GPUs, {} CPU workers.".format(num_gpus, workers))
-epochs = 1
+epochs = 5
 batch_per_gpu = 100
 batch_size = torch.cuda.device_count()*batch_per_gpu # Change if out of cuda memory
 
@@ -63,10 +63,10 @@ print_freq = 10
 prec1 = 0
 lr = base_lr
 save_every = 1
-log_every=1
-log_dir = '../tb_logs/sn/'
-lr_decay = 0.4
-lr_period = 10
+log_every=20
+log_dir = '../tb_logs/sn/' #Unused
+lr_decay = 0.6
+lr_period = 5
 
 CHECKPOINTS_PATH = './saved_models/sn/'
 
@@ -98,7 +98,7 @@ def main():
                 model.module.load_state_dict(state)
             except:
                 model.load_state_dict(state)
-            epoch = saved['epoch']
+            epoch = saved['epoch'] + 1
             best_prec1 = saved['best_prec1']
         else:
             print('Warning: Could not read checkpoint!')
@@ -107,11 +107,11 @@ def main():
     
     dataTrain = ITrackerData(dataPath = args.data_path, split='train', imSize = imSize)
     dataVal = ITrackerData(dataPath = args.data_path, split='val', imSize = imSize)
-    dataTest = ITrackerData(dataPath = args.data_path, split='test', imSize = imSize)
+    dataTest = ITrackerData(dataPath = args.data_path, split='val', imSize = imSize)
 
     val_loader = torch.utils.data.DataLoader(
         dataVal,
-        batch_size=batch_size, shuffle=False,
+        batch_size=batch_size, shuffle=True,
         num_workers=workers, pin_memory=True)
 
     test_loader = torch.utils.data.DataLoader(
@@ -125,6 +125,8 @@ def main():
         num_workers=workers, pin_memory=True)
     
     print ("Size of training, validation and test sets: {}, {}, {}".format(batch_size*len(train_loader), batch_size*len(val_loader), batch_size*len(test_loader)))
+    criterion = nn.MSELoss().cuda()
+
     # Test mode
     if doTest: 
         test_mean = validate(test_loader, model, criterion, epoch)
@@ -136,15 +138,13 @@ def main():
         batch_size=batch_size, shuffle=True,
         num_workers=workers, pin_memory=True)
 
-    criterion = nn.MSELoss().cuda()
-
     optimizer = torch.optim.Adam(model.parameters(), lr,
                                 betas=adam_betas)
         
-    train_model(model, val_loader, val_loader, optimizer, criterion, epoch, epochs)
+    train_model(model, train_loader, val_loader, optimizer, criterion, epoch, epochs)
     
     # export scalar data to JSON for external processing
-    writer.export_scalars_to_json("./all_scalars.json")
+#     writer.export_scalars_to_json("./all_scalars.json")
     writer.close()
 
 def train_model(model, train_loader, val_loader, optimizer, criterion, start_epoch, epochs):
@@ -160,19 +160,18 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, start_epo
         train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list, train_counter)
 
         # evaluate on validation set
-#         prec1 = validate(val_loader, model, criterion, epoch)
-        prec1 = 100
+        prec1 = validate(val_loader, model, criterion, epoch)
         # remember best prec@1 and save checkpoint
         is_best = prec1 < best_prec1
         best_prec1 = min(prec1, best_prec1)
         save_name = 'checkpoint_ep{}.pth.tar'.format(epoch)
-        save_checkpoint({
-            'epoch': epoch + 1,
-            'state_dict': model.state_dict(),
-            'best_prec1': best_prec1,
-        }, is_best, save_name)
+#         save_checkpoint({
+#             'epoch': epoch,
+#             'state_dict': model.state_dict(),
+#             'best_prec1': best_prec1,
+#         }, is_best, save_name)
         
-    np.save("./trainlosses_lr{}_ep{}.npy".format(lr, epochs), np.array(loss_list))
+#     np.save("./losses_lr{}_ep{}.npy".format(lr, epochs), np.array(loss_list))
     
 def train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list, train_counter):
     batch_time = AverageMeter()
@@ -185,8 +184,8 @@ def train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list, tra
     end = time.time()
 
     for i, (row, imFace, imEyeL, imEyeR, faceGrid, gaze) in enumerate(train_loader):
-        if i > 2: break
         # measure data loading time
+        if (i > 200): break
         data_time.update(time.time() - end)
         time0 = time.time()
         imFace = imFace.cuda()
@@ -214,6 +213,8 @@ def train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list, tra
         time2 = time.time() - time1
         print("Time for sec 2 {}".format(time2))
         time2 = time.time()
+#         print("output:\n", str(output.detach().cpu().numpy()))
+#         print("gaze:\n", str(gaze.detach().cpu().numpy()))
         loss = criterion(output, gaze)
         losses.update(loss.data.item(), imFace.size(0))
 
@@ -226,7 +227,6 @@ def train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list, tra
         batch_time.update(time.time() - end)
         end = time.time()
 
-#         count=count+1
         time3 = time.time() - time2
         print("Time for sec 3 {}".format(time3))
 
@@ -250,11 +250,12 @@ def train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list, tra
                 writer.add_scalar(tag, value, train_counter)
 
             # 2. Log values and gradients of the parameters (histogram summary)
-            for tag, value in model.named_parameters():
-#                 print(tag)
-                tag = tag.replace('.', '/')
-                writer.add_histogram(tag, value.data.cpu().numpy(), train_counter)
-                writer.add_histogram(tag+'/grad', value.grad.data.cpu().numpy(), train_counter)
+#             if i % log_params == 0:
+                
+    for tag, value in model.named_parameters():
+        tag = tag.replace('.', '/')
+        writer.add_histogram(tag, value.data.cpu().numpy(), train_counter)
+        writer.add_histogram(tag+'/grad', value.grad.data.cpu().numpy(), train_counter)
         
             # 3. Log training images (image summary)
 #             info = { 'images': images.view(-1, 28, 28)[:10].cpu().numpy() }
@@ -265,17 +266,41 @@ def train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list, tra
             
             
 def validate(val_loader, model, criterion, epoch):
-    count_test = 0
+    global count_test
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
     lossesLin = AverageMeter()
 
     # switch to evaluate mode
-    model.eval()
     end = time.time()
 
+    warmup_sets = int(len(val_loader) / 20)
+    #Stabilize BN values before evaluation
+    print("Warming up BN metrics")
+    for i, (row, imFace, imEyeL, imEyeR, faceGrid, gaze) in enumerate(val_loader):
+        if (i > warmup_sets): break
+        # measure data loading time
+        data_time.update(time.time() - end)
+        imFace = imFace.cuda()
+        imEyeL = imEyeL.cuda()
+        imEyeR = imEyeR.cuda()
+        faceGrid = faceGrid.cuda()
+        gaze = gaze.cuda()
+        
+#         imFace = torch.autograd.Variable(imFace, requires_grad = False)
+#         imEyeL = torch.autograd.Variable(imEyeL, requires_grad = False)
+#         imEyeR = torch.autograd.Variable(imEyeR, requires_grad = False)
+#         faceGrid = torch.autograd.Variable(faceGrid, requires_grad = False)
+#         gaze = torch.autograd.Variable(gaze, requires_grad = False)
 
+        # compute output
+        model_stats = dict()
+#             if i == 0:          
+        output = model(imFace, imEyeL, imEyeR, faceGrid)
+    print("BN warmed up")
+
+    model=model.eval()
     oIndex = 0
     for i, (row, imFace, imEyeL, imEyeR, faceGrid, gaze) in enumerate(val_loader):
         # measure data loading time
@@ -286,27 +311,29 @@ def validate(val_loader, model, criterion, epoch):
         faceGrid = faceGrid.cuda()
         gaze = gaze.cuda()
         
-        imFace = torch.autograd.Variable(imFace, requires_grad = False)
-        imEyeL = torch.autograd.Variable(imEyeL, requires_grad = False)
-        imEyeR = torch.autograd.Variable(imEyeR, requires_grad = False)
-        faceGrid = torch.autograd.Variable(faceGrid, requires_grad = False)
-        gaze = torch.autograd.Variable(gaze, requires_grad = False)
+#         imFace = torch.autograd.Variable(imFace, requires_grad = False)
+#         imEyeL = torch.autograd.Variable(imEyeL, requires_grad = False)
+#         imEyeR = torch.autograd.Variable(imEyeR, requires_grad = False)
+#         faceGrid = torch.autograd.Variable(faceGrid, requires_grad = False)
+#         gaze = torch.autograd.Variable(gaze, requires_grad = False)
 
         # compute output
         model_stats = dict()
         with torch.no_grad():
-            if i == 0:          
-                output = model(imFace, imEyeL, imEyeR, faceGrid, model_stats=model_stats)
-                print("Number of parameters %i, number of flops: %i" % (model_stats['params'], model_stats['flops']))
-            else:      
-                output = model(imFace, imEyeL, imEyeR, faceGrid)
-
+#             if i == 0:          
+            output = model(imFace, imEyeL, imEyeR, faceGrid)
+#             print("Number of parameters %i, number of flops: %i" % (model_stats['params'], model_stats['flops']))
+#             else:      
+#                 output = model(imFace, imEyeL, imEyeR, faceGrid)
+        
         loss = criterion(output, gaze)
         
         lossLin = output - gaze
         lossLin = torch.mul(lossLin,lossLin)
         lossLin = torch.sum(lossLin,1)
-        
+        print("output:\n", str(output.detach().cpu().numpy()))
+        print("gaze:\n", str(gaze.cpu().numpy()))
+
         lossLin = torch.mean(torch.sqrt(lossLin))
 
         losses.update(loss.data.item(), imFace.size(0))
@@ -323,7 +350,17 @@ def validate(val_loader, model, criterion, epoch):
                   'Error L2 {lossLin.val:.4f} ({lossLin.avg:.4f})\t'.format(
                     epoch, i, len(val_loader), batch_time=batch_time,
                    loss=losses,lossLin=lossesLin))
+        if i % log_every == 0:
+             # ================================================================== #
+            #                        TensorboardX Logging                         #
+            # ================================================================== #
+            
+            # 1. Log scalar values (scalar summary)
+            info = { 'loss': losses.val, 'loss_avg': losses.avg }
 
+            for tag, value in info.items():
+                writer.add_scalar(tag, value, train_counter)
+                
     return lossesLin.avg
 
 
