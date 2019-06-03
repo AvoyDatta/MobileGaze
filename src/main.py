@@ -17,6 +17,7 @@ from ITrackerData import ITrackerData
 from MobileGaze import MobileGaze
 # import tensorboard 
 from tensorboardX import SummaryWriter
+from PIL import Image
 
 '''
 Train/test code for MobileGaze.
@@ -41,7 +42,9 @@ parser.add_argument('--test', type=str2bool, nargs='?', const=True, default=Fals
 parser.add_argument('--reset', type=str2bool, nargs='?', const=True, default=False, help="Start from scratch (do not load).")
 parser.add_argument('--workers', type=int, nargs='?', const=True, default=2, help="Number of CPU cores.")
 parser.add_argument('--lr', type=float, nargs='?', const=True, default=0.01, help="Initial learning rate.")
-parser.add_argument('--momentum', type=float, nargs='?', const=True, default=0.01, help="Momentum for batch normalization.")
+parser.add_argument('--bn_momentum', type=float, nargs='?', const=True, default=0.25, help="Momentum for batch normalization.")
+parser.add_argument('--criterion', type=str, nargs='?', const=True, default='MSE', help="Loss function used.")
+
 
 args = parser.parse_args()
 
@@ -52,11 +55,12 @@ doTest = args.test # Only run test, no training
 workers = args.workers
 num_gpus = 0 if not torch.cuda.is_available() else torch.cuda.device_count() 
 print("Using {} GPUs, {} CPU workers.".format(num_gpus, workers))
-epochs = 5
-batch_per_gpu = 100
+epochs = 2
+batch_per_gpu = 64
 batch_size = torch.cuda.device_count()*batch_per_gpu # Change if out of cuda memory
 
-#Hyperparams used in iTracker 
+val_batch = num_gpus * 16
+
 base_lr = args.lr
 adam_betas = [0.9, .999]
 print_freq = 10
@@ -67,6 +71,8 @@ log_every=20
 log_dir = '../tb_logs/sn/' #Unused
 lr_decay = 0.6
 lr_period = 5
+bn_momentum = args.bn_momentum
+criterion_name = args.criterion
 
 CHECKPOINTS_PATH = './saved_models/sn/'
 
@@ -75,10 +81,13 @@ saved_model_path = None if not args.saved_model else str(args.saved_model)
 
 writer = SummaryWriter()
 
+outlier_factor = 2.0
+
+
 def main():
 #     global args, best_prec1, weight_decay, momentum
 
-    model = MobileGaze().cuda()
+    model = MobileGaze(bn_momentum).cuda()
     
     print("Total number of model parameters: ", sum(p.numel() for p in model.parameters()))
     print("Number of trainable parameters: ", sum(p.numel() for p in model.parameters() if p.requires_grad))
@@ -107,16 +116,16 @@ def main():
     
     dataTrain = ITrackerData(dataPath = args.data_path, split='train', imSize = imSize)
     dataVal = ITrackerData(dataPath = args.data_path, split='val', imSize = imSize)
-    dataTest = ITrackerData(dataPath = args.data_path, split='val', imSize = imSize)
+    dataTest = ITrackerData(dataPath = args.data_path, split='test', imSize = imSize)
 
     val_loader = torch.utils.data.DataLoader(
         dataVal,
-        batch_size=batch_size, shuffle=True,
+        batch_size=val_batch, shuffle=True,
         num_workers=workers, pin_memory=True)
 
     test_loader = torch.utils.data.DataLoader(
         dataTest,
-        batch_size=batch_size, shuffle=False,
+        batch_size=val_batch, shuffle=True,
         num_workers=workers, pin_memory=True)
     
     train_loader = torch.utils.data.DataLoader(
@@ -124,32 +133,37 @@ def main():
         batch_size=batch_size, shuffle=True,
         num_workers=workers, pin_memory=True)
     
-    print ("Size of training, validation and test sets: {}, {}, {}".format(batch_size*len(train_loader), batch_size*len(val_loader), batch_size*len(test_loader)))
-    criterion = nn.MSELoss().cuda()
-
+    print ("Size of training, validation and test sets: {}, {}, {}".format(batch_size*len(train_loader), val_batch*len(val_loader), val_batch*len(test_loader)))
+    
+    criterion = nn.SmoothL1Loss().cuda() if criterion_name == 'huber' else nn.MSELoss().cuda()
+    
+    print("Criterion used: {}".format(criterion_name))
+    
     # Test mode
     if doTest: 
         test_mean = validate(test_loader, model, criterion, epoch)
         print(test_mean)
         return
-   
-    train_loader = torch.utils.data.DataLoader(
-        dataTrain,
-        batch_size=batch_size, shuffle=True,
-        num_workers=workers, pin_memory=True)
 
     optimizer = torch.optim.Adam(model.parameters(), lr,
                                 betas=adam_betas)
-        
+     
+    
     train_model(model, train_loader, val_loader, optimizer, criterion, epoch, epochs)
     
     # export scalar data to JSON for external processing
 #     writer.export_scalars_to_json("./all_scalars.json")
+    writer.add_scalar('bn_momentum', bn_momentum, 0)
+
     writer.close()
 
 def train_model(model, train_loader, val_loader, optimizer, criterion, start_epoch, epochs):
 #     tb = tensorboard.Tensorboard(log_dir)
     best_prec1 = int(1e20)
+    batch_time = AverageMeter()
+    data_time = AverageMeter()
+    losses = AverageMeter()
+    l2_errors = AverageMeter()
     train_counter = 0
     loss_list = []
     for epoch in range(start_epoch, epochs):
@@ -157,53 +171,55 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, start_epo
         print("Learning rate for epoch{}: {}".format(epoch, lr))
         
         # train for one epoch
-        train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list, train_counter)
+        try: 
+            train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list, train_counter,
+                       batch_time, data_time, losses, l2_errors)
 
+        except KeyboardInterrupt: 
+            pass
+        
         # evaluate on validation set
         prec1 = validate(val_loader, model, criterion, epoch)
         # remember best prec@1 and save checkpoint
         is_best = prec1 < best_prec1
         best_prec1 = min(prec1, best_prec1)
-        save_name = 'checkpoint_ep{}.pth.tar'.format(epoch)
-#         save_checkpoint({
-#             'epoch': epoch,
-#             'state_dict': model.state_dict(),
-#             'best_prec1': best_prec1,
-#         }, is_best, save_name)
-        
-#     np.save("./losses_lr{}_ep{}.npy".format(lr, epochs), np.array(loss_list))
+        save_name = 'checkpoint_ep{}_bn_{}_{}.pth.tar'.format(epoch, bn_momentum, criterion_name)
+        save_checkpoint({
+            'epoch': epoch,
+            'state_dict': model.state_dict(),
+            'best_prec1': best_prec1,
+        }, is_best, save_name)
+    np.save("./losses_lr{}_ep{}.npy".format(lr, epochs), np.array(loss_list))
     
-def train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list, train_counter):
-    batch_time = AverageMeter()
-    data_time = AverageMeter()
-    losses = AverageMeter()
-    
+def train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list, train_counter,
+               batch_time, data_time, losses, l2_errors):
+
     # switch to train mode
     model.train()
 
     end = time.time()
 
-    for i, (row, imFace, imEyeL, imEyeR, faceGrid, gaze) in enumerate(train_loader):
+    for i, (row, imFace, imEyeL, imEyeR, faceGrid, gaze, imFacePath) in enumerate(train_loader):
         # measure data loading time
-        if (i > 200): break
+#         if (i > 1000): break
         data_time.update(time.time() - end)
         time0 = time.time()
-        imFace = imFace.cuda()
-        imEyeL = imEyeL.cuda()
-        imEyeR = imEyeR.cuda()
-        faceGrid = faceGrid.cuda()
-        gaze = gaze.cuda()
+        imFace = imFace.cuda(non_blocking=True)
+        imEyeL = imEyeL.cuda(non_blocking=True)
+        imEyeR = imEyeR.cuda(non_blocking=True)
+        faceGrid = faceGrid.cuda(non_blocking=True)
+        gaze = gaze.cuda(non_blocking=True)
 #         imFace = torch.autograd.Variable(imFace, requires_grad = False)
 #         imEyeL = torch.autograd.Variable(imEyeL, requires_grad = False)
 #         imEyeR = torch.autograd.Variable(imEyeR, requires_grad = False)
 #         faceGrid = torch.autograd.Variable(faceGrid, requires_grad = False)
 #         gaze = torch.autograd.Variable(gaze, requires_grad = False)
         time1 = time.time() - time0
-        print("Time for sec 1 {}".format(time1))
+#         print("Time for sec 1 {}".format(time1))
         time1 = time.time()
         # compute output
 #         model_stats = dict()
-#         with torch.no_grad():
+
 #         if i == 0:          
         output = model(imFace, imEyeL, imEyeR, faceGrid)
 #                 print("Number of parameters %i, number of flops: %i" % (model_stats['params'], model_stats['flops']))
@@ -211,47 +227,71 @@ def train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list, tra
 #             output = model(imFace, imEyeL, imEyeR, faceGrid)
 
         time2 = time.time() - time1
-        print("Time for sec 2 {}".format(time2))
+#         print("Time for sec 2 {}".format(time2))
         time2 = time.time()
 #         print("output:\n", str(output.detach().cpu().numpy()))
 #         print("gaze:\n", str(gaze.detach().cpu().numpy()))
         loss = criterion(output, gaze)
         losses.update(loss.data.item(), imFace.size(0))
 
-        # compute gradient and do Adam step
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        train_counter += 1
+        l2_error = output - gaze
+        l2_error = torch.mul(l2_error,l2_error)
+        l2_error = torch.sum(l2_error,1)
+        l2_error = torch.mean(torch.sqrt(l2_error))
+            
+        if (l2_error.item() > outlier_factor * l2_errors.avg) and i > 5: #Outlier
+            print("Minibatch {} of epoch {} skipped during training.".format(train_counter, epoch))
+            for img_idx in range(4):
+                imFace = Image.open(str(imFacePath[img_idx])).convert('RGB')
+                img_savepath = "./buggy/train/buggy_epoch{}_iter{}_l2_error{}_{}".format(epoch, train_counter, l2_error.item(),                                                                            img_idx)
+                imFace.save(img_savepath, "JPEG")
+        else:
+            l2_errors.update(l2_error.item(), imFace.size(0))         
+            # compute gradient and do Adam step
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            train_counter += 1
+            
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
 
         time3 = time.time() - time2
-        print("Time for sec 3 {}".format(time3))
+#         print("Time for sec 3 {}".format(time3))
 
         if i % print_freq == 0:
             print('Epoch (train): [{0}][{1}/{2}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                       'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                      'Loss {loss.val:.4f} ({loss.avg:.4f})\t'.format(
+                      'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                      'Avg L2 error {l2_errors.avg:.4f}'.format(
                        epoch, i, len(train_loader), batch_time=batch_time,
-                       data_time=data_time, loss=losses))
+                       data_time=data_time, loss=losses,
+                       l2_errors=l2_errors))
+        
+        if i % (log_every * 10) == 0:
             loss_list.append(losses.val)
+            
         if i % log_every == 0:
              # ================================================================== #
             #                        TensorboardX Logging                         #
             # ================================================================== #
             
             # 1. Log scalar values (scalar summary)
-            info = { 'loss': losses.val, 'loss_avg': losses.avg }
+            info = { 'loss': losses.val, 'loss_avg': losses.avg, 
+                     'l2_error': l2_errors.val, 'l2_error_avg': l2_errors.avg, 
+                     'batch_time_avg': batch_time.avg, 'data_time_avg': data_time.avg 
+                   }
 
             for tag, value in info.items():
-                writer.add_scalar(tag, value, train_counter)
-
-            # 2. Log values and gradients of the parameters (histogram summary)
-#             if i % log_params == 0:
-                
+                writer.add_scalar(tag, value, train_counter)            
+          
+            writer.add_scalar('learning_rate', optimizer.state_dict()['param_groups'][0]['lr'], epoch)  
+            
+        del row, imFace, imEyeL, imEyeR, faceGrid, gaze, loss, l2_error
+        
+    # Log values and gradients of the parameters (histogram summary)
     for tag, value in model.named_parameters():
         tag = tag.replace('.', '/')
         writer.add_histogram(tag, value.data.cpu().numpy(), train_counter)
@@ -266,7 +306,7 @@ def train_epoch(model, train_loader, optimizer, criterion, epoch, loss_list, tra
             
             
 def validate(val_loader, model, criterion, epoch):
-    global count_test
+    test_counter=0
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -278,7 +318,7 @@ def validate(val_loader, model, criterion, epoch):
     warmup_sets = int(len(val_loader) / 20)
     #Stabilize BN values before evaluation
     print("Warming up BN metrics")
-    for i, (row, imFace, imEyeL, imEyeR, faceGrid, gaze) in enumerate(val_loader):
+    for i, (row, imFace, imEyeL, imEyeR, faceGrid, gaze, imFacePath) in enumerate(val_loader):
         if (i > warmup_sets): break
         # measure data loading time
         data_time.update(time.time() - end)
@@ -287,23 +327,15 @@ def validate(val_loader, model, criterion, epoch):
         imEyeR = imEyeR.cuda()
         faceGrid = faceGrid.cuda()
         gaze = gaze.cuda()
-        
-#         imFace = torch.autograd.Variable(imFace, requires_grad = False)
-#         imEyeL = torch.autograd.Variable(imEyeL, requires_grad = False)
-#         imEyeR = torch.autograd.Variable(imEyeR, requires_grad = False)
-#         faceGrid = torch.autograd.Variable(faceGrid, requires_grad = False)
-#         gaze = torch.autograd.Variable(gaze, requires_grad = False)
-
-        # compute output
-        model_stats = dict()
-#             if i == 0:          
         output = model(imFace, imEyeL, imEyeR, faceGrid)
     print("BN warmed up")
 
-    model=model.eval()
+    model.eval()
     oIndex = 0
-    for i, (row, imFace, imEyeL, imEyeR, faceGrid, gaze) in enumerate(val_loader):
+    
+    for i, (row, imFace, imEyeL, imEyeR, faceGrid, gaze, imFacePath) in enumerate(val_loader):
         # measure data loading time
+#         if i > 200: break
         data_time.update(time.time() - end)
         imFace = imFace.cuda()
         imEyeL = imEyeL.cuda()
@@ -311,12 +343,6 @@ def validate(val_loader, model, criterion, epoch):
         faceGrid = faceGrid.cuda()
         gaze = gaze.cuda()
         
-#         imFace = torch.autograd.Variable(imFace, requires_grad = False)
-#         imEyeL = torch.autograd.Variable(imEyeL, requires_grad = False)
-#         imEyeR = torch.autograd.Variable(imEyeR, requires_grad = False)
-#         faceGrid = torch.autograd.Variable(faceGrid, requires_grad = False)
-#         gaze = torch.autograd.Variable(gaze, requires_grad = False)
-
         # compute output
         model_stats = dict()
         with torch.no_grad():
@@ -331,11 +357,18 @@ def validate(val_loader, model, criterion, epoch):
         lossLin = output - gaze
         lossLin = torch.mul(lossLin,lossLin)
         lossLin = torch.sum(lossLin,1)
-        print("output:\n", str(output.detach().cpu().numpy()))
-        print("gaze:\n", str(gaze.cpu().numpy()))
-
+#         print("output:\n", str(output.detach().cpu().numpy()))
+#         print("gaze:\n", str(gaze.cpu().numpy()))
+        test_counter+=1
         lossLin = torch.mean(torch.sqrt(lossLin))
 
+        if (lossLin.item() > outlier_factor * lossesLin.avg) and (i > 5) : #Outlier
+            print("Minibatch {} skipped during validation.".format(i))
+            for img_idx in range(4):
+                imFace = Image.open(str(imFacePath[img_idx])).convert('RGB')
+                img_savepath = "./buggy/val/buggy_epoch{}_iter{}_lossLin{}_{}".format(epoch, i, lossLin.item(),                                                                            img_idx), "JPEG"
+                imFace.save(img_savepath)
+        
         losses.update(loss.data.item(), imFace.size(0))
         lossesLin.update(lossLin.item(), imFace.size(0))
      
@@ -356,11 +389,12 @@ def validate(val_loader, model, criterion, epoch):
             # ================================================================== #
             
             # 1. Log scalar values (scalar summary)
-            info = { 'loss': losses.val, 'loss_avg': losses.avg }
+            info = { 'val_loss_epoch{}'.format(epoch): losses.val, 'val_loss_avg_epoch{}'.format(epoch): losses.avg }
 
             for tag, value in info.items():
-                writer.add_scalar(tag, value, train_counter)
-                
+                writer.add_scalar(tag, value, test_counter)
+                          
+#         del row, imFace, imEyeL, imEyeR, faceGrid, gaze, loss
     return lossesLin.avg
 
 

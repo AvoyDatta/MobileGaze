@@ -141,7 +141,7 @@ class ITrackerData(data.Dataset):
         faceGrid = torch.FloatTensor(faceGrid)
         gaze = torch.FloatTensor(gaze)
 
-        return row, imFace, imEyeL, imEyeR, faceGrid, gaze
+        return row, imFace, imEyeL, imEyeR, faceGrid, gaze, imFacePath
     
         
     def __len__(self):

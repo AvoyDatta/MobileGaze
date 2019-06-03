@@ -28,12 +28,11 @@ Adapted from iTracker-Pytorch Implementation
 
 squeezenet_outs = 256
 sn_pretrained = True
-bn_momentum = 0.2
 track_running_stats=True
 
 class MobileGazeImageModel(nn.Module):
     # Used for both eyes (with shared weights) and the face (with unqiue weights)
-    def __init__(self):
+    def __init__(self, bn_momentum):
         super(MobileGazeImageModel, self).__init__()
         self.sn = torchvision.models.squeezenet1_1(pretrained=sn_pretrained, num_classes=1000)
 #         print(self.sn.state_dict()['classifier.1.weight'].size())
@@ -69,9 +68,9 @@ class MobileGazeImageModel(nn.Module):
 
 class FaceImageModel(nn.Module):
     
-    def __init__(self):
+    def __init__(self, bn_momentum):
         super(FaceImageModel, self).__init__()
-        self.conv = MobileGazeImageModel() #BNed
+        self.conv = MobileGazeImageModel(bn_momentum) #BNed
         self.fc = nn.Sequential(
             nn.Linear(squeezenet_outs, 128),
             nn.ReLU(inplace=True),
@@ -88,7 +87,7 @@ class FaceImageModel(nn.Module):
 
 class FaceGridModel(nn.Module):
     # Model for the face grid pathway
-    def __init__(self, gridSize = 25):
+    def __init__(self, bn_momentum, gridSize = 25):
         super(FaceGridModel, self).__init__()
         self.fc = nn.Sequential(
             nn.Linear(gridSize * gridSize, 256),
@@ -112,12 +111,12 @@ class FaceGridModel(nn.Module):
 class MobileGaze(nn.Module):
 
 
-    def __init__(self):
+    def __init__(self, bn_momentum):
         super(MobileGaze, self).__init__()
-        self.eyeModel = MobileGazeImageModel()
+        self.eyeModel = MobileGazeImageModel(bn_momentum)
             
-        self.faceModel = FaceImageModel()
-        self.gridModel = FaceGridModel() #Same as iTracker
+        self.faceModel = FaceImageModel(bn_momentum)
+        self.gridModel = FaceGridModel(bn_momentum) #Same as iTracker
         # Joining both eyes
         self.eyesFC = nn.Sequential(
             nn.Linear(2*squeezenet_outs, 128), #(num_eyes * (act_size/eye))
