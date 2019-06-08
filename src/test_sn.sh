@@ -1,3 +1,3 @@
 #!/bin/bash
 
-python main.py --test --data_path ../processed/ --saved_model ./saved_models/sn/best_checkpoint.pth.tar --workers 2
+python main.py --test --data_path ../processed/ --saved_model ./saved_models/sn/best_checkpoint.pth.tar --workers 4 --bn_warmup false

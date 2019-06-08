@@ -29,6 +29,7 @@ Adapted from iTracker-Pytorch Implementation
 squeezenet_outs = 256
 sn_pretrained = True
 track_running_stats=True
+# p_drop=0.5
 
 class MobileGazeImageModel(nn.Module):
     # Used for both eyes (with shared weights) and the face (with unqiue weights)
@@ -76,7 +77,7 @@ class FaceImageModel(nn.Module):
             nn.ReLU(inplace=True),
             nn.BatchNorm1d(128, bn_momentum, track_running_stats=True),
             nn.Linear(128, 64),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=True), 
             nn.BatchNorm1d(64, bn_momentum, track_running_stats=True)
             )
 

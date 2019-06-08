@@ -61,8 +61,8 @@ class ItrackerImageModel(nn.Module):
         )
 
     def forward(self, x):
-        x = self.features(x) #(64, 12, 12)
-        x = x.view(x.size(0), -1) #(64 x 12 x 12)
+        x = self.features(x) #(N, 64, 12, 12)
+        x = x.view(x.size(0), -1) #(N, 64 x 12 x 12)
         return x
 
 class FaceImageModel(nn.Module):
