@@ -1,4 +1,4 @@
-##MobileGaze: An efficient framework for mobile gaze tracking
+#MobileGaze: An efficient framework for mobile gaze tracking
 
 The MobileGaze paper can be found in the folder MobileGaze/ee267w_submissions/ . 
 Author: Avoy Datta (BSc. Stanford EE, 2020). 
