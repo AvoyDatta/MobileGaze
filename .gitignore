@@ -4,8 +4,8 @@
 *.npy
 
 #Ignore everything in data and archived
-data/
-archived/
+data/*
+!data/extract.sh
 processed/
 tb_logs/
 src/runs/
