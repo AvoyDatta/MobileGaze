@@ -3,7 +3,7 @@
 *.tar.gz
 *.npy
 
-#Ignore everything in data and archived
+#Ignore everything in data except extraction script
 data/*
 !data/extract.sh
 processed/
@@ -15,5 +15,4 @@ src/runs/
 GazeCapture/pytorch/__pycache__/*.pyc
 GazeCapture/pytorch/__pycache__
 
-#Exceptions
-!data/extract.sh
+
